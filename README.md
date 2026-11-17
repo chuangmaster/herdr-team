@@ -58,11 +58,11 @@
    hc run --name <feature>-be-dev --cwd <repo>/.worktrees/<feature> developer "依 plan 實作 …"
    ```
 3. **依序**跑：developer → reviewer → fixer → (tester) → reviewer …
-4. **merge 後清理**：
+4. **merge 後清理**：先結束這個 feature 剩下的子 agent，再移除 worktree：
    ```sh
+   hc kill <t> && hc rm <t>      # 每個剩下的子 agent
    git worktree remove <repo>/.worktrees/<feature>
    ```
-   並關掉已完成的子 agent terminal。
 
 ### Worktree 規則
 
@@ -70,6 +70,14 @@
 - 會改檔的角色（developer、fixer、tester）派出前，一定先建好 worktree。
 - 同一個 feature 的所有角色共用**同一個** worktree；唯讀角色（reviewer、bug-finder）也可以在裡面。
 - **同一個 worktree 裡，不要同時跑兩個會改檔的角色**：要嘛依序跑，要嘛各給一個 worktree。
+
+### 子 agent 生命週期
+
+template 跑的是互動模式的 `claude`，回報完不會退出，會一直是 `live`（狀態 `done`），所以要由父 agent 自己清理。父 agent 結束時，子 agent 也會跟著結束（除非用了 `--outlive-parent`）。
+
+- **先重用，再開新的**：同一個 feature 的後續工作（再修一輪、再審一次）用 `hc send <t> "任務"` 交給原本的角色，不要再開 `fix2`。
+- **用完就收**：收到回報、確定不會再交代工作時，`hc kill <t>` 再 `hc rm <t>`。
+- **merge 時全部收尾**：結束這個 feature 剩下的所有子 agent，再移除 worktree。
 
 ---
 
