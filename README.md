@@ -1,87 +1,43 @@
 # herdr-team
 
-我的 herdr 使用規範：派工流程、角色、layout 與快捷鍵。
+在 [herdr](https://herdr.dev) 裡讓一個主 agent 派出多個角色（調查、開發、修正、審查、測試）協作的一組設定：
 
-> 整理日期：2026-11-14
-> 這份是**摘要**。真正生效的是下面「設定檔位置」列的原始檔，修改規則請改原始檔，再回來同步這份文件。
+- 5 個角色 template（`hc run <角色>` 使用）
+- `herdr-team`：一次開多個角色，並在新 tab 排成 pane（選用）
+- 派工與 worktree 規則，貼進 `CLAUDE.md` 即可
 
----
+## 支援平台
 
-## 1. 設定檔位置
+| 項目 | macOS | Linux | Windows |
+|---|---|---|---|
+| templates + `hc run` | ✓（已驗證） | 應可用（未測） | 應可用（未測） |
+| `herdr-team` script、`install.sh` | ✓（已驗證） | 應可用（未測） | ✗ 這兩個是 bash，原生 Windows 不能直接跑 |
 
-### 我自己的規則（可改）
+`herdr-team` 需要 `bash`、`jq`、`hc`、`herdr-app`，而且 **herdr 視窗必須在執行中**（它用 `herdr-app do` 開 tab 與 pane）。只有 herdr-core、沒有視窗時會失敗。
 
-| 檔案 | 用途 |
-|---|---|
-| `~/.claude/CLAUDE.md`（`## herdr` 段） | 派工與 worktree 規則 |
-| `~/.config/herdr-core/templates/*.md` | `hc run <角色>` 的角色定義 |
+開發與測試版本：`herdr-app 0.1.16`、`hc 0.1.21`。
 
-### 介面設定（`~/.config/herdr-app/`）
+## 安裝
 
-| 檔案 | 用途 |
-|---|---|
-| `layouts/main-procs.json` | 目前使用的 layout（由 `main` 0.1.13 clone） |
-| `keys.json` | 快捷鍵 |
-| `settings.json` | 外觀（zoom 1、音效開、dark） |
-| `shared.json` | mod 狀態（目前 layout、agents 排序 `grouped`、側欄收合等） |
-| `mods/` | 各面板 mod |
-
-### 官方文件（勿改，會被覆寫）
-
-- `~/.config/herdr-app/AGENTS.md`：herdr app 完整說明
-- `hc --help`：herdr-core CLI 說明
-- core 設定檔應在 `~/.config/herdr-core/config.toml`（目前不存在，用預設值）
-
----
-
-## 2. 派工流程
-
-一個主 agent（例如 Claude Code）負責規劃與協調，用 `hc run` 派出子 agent 做實際工作。子 agent 的 `parent` 會記成主 agent，所以在 agents 清單裡會掛在主 agent 底下。
-
-```
-主 agent（主 checkout，只協調不改檔）
- ├─ <feature>-be-dev     developer   → 後端 worktree
- ├─ <feature>-fe-dev     developer   → 前端 worktree
- ├─ <feature>-be-review  reviewer    → 後端 worktree
- └─ <feature>-be-fix     fixer       → 後端 worktree
+```sh
+git clone https://github.com/chuangmaster/herdr-team
+cd herdr-team
+./install.sh            # 已存在的檔案不會被覆蓋；加 --force 才覆蓋
+hc templates            # 應列出 5 個角色
 ```
 
-### 標準步驟
+`install.sh` 做兩件事：
 
-1. **開 worktree**（會改檔的角色出場前）
-   ```sh
-   git worktree add <repo>/.worktrees/<feature> -b <branch>
-   ```
-   前後端跨 repo 時，兩邊用**相同的 `<feature>` 與 branch 名稱**。
-2. **派角色**，`--cwd` 指向該 worktree：
-   ```sh
-   hc run --name <feature>-be-dev --cwd <repo>/.worktrees/<feature> developer "依 plan 實作 …"
-   ```
-3. **依序**跑：developer → reviewer → fixer → (tester) → reviewer …
-4. **merge 後清理**：先結束這個 feature 剩下的子 agent，再移除 worktree：
-   ```sh
-   hc kill <t> && hc rm <t>      # 每個剩下的子 agent
-   git worktree remove <repo>/.worktrees/<feature>
-   ```
+- `bin/herdr-team` → `~/.local/bin/`（需在 `PATH` 內）
+- `templates/*.md` → `~/.config/herdr-core/templates/`
 
-### Worktree 規則
+路徑可用 `HERDR_TEAM_BIN_DIR`、`HERDR_CORE_TEMPLATES_DIR` 覆寫。
 
-- **絕不在 repo 主 checkout 切 branch**：其他 session 和 tab 共用那個資料夾。
-- 會改檔的角色（developer、fixer、tester）派出前，一定先建好 worktree。
-- 同一個 feature 的所有角色共用**同一個** worktree；唯讀角色（reviewer、bug-finder）也可以在裡面。
-- **同一個 worktree 裡，不要同時跑兩個會改檔的角色**：要嘛依序跑，要嘛各給一個 worktree。
+最後把 [`snippets/CLAUDE.md`](snippets/CLAUDE.md) 的內容貼進你的 `~/.claude/CLAUDE.md`，主 agent 才會遵守派工規則。
 
-### 子 agent 生命週期
+Windows：不要跑 `install.sh`，手動把 `templates/*.md` 放進 herdr-core 的 templates 資料夾，只使用 `hc run`。
 
-template 跑的是互動模式的 `claude`，回報完不會退出，會一直是 `live`（狀態 `done`），所以要由父 agent 自己清理。父 agent 結束時，子 agent 也會跟著結束（除非用了 `--outlive-parent`）。
-
-- **先重用，再開新的**：同一個 feature 的後續工作（再修一輪、再審一次）用 `hc send <t> "任務"` 交給原本的角色，不要再開 `fix2`。
-- **用完就收**：收到回報、確定不會再交代工作時，`hc kill <t>` 再 `hc rm <t>`。
-- **merge 時全部收尾**：結束這個 feature 剩下的所有子 agent，再移除 worktree。
-
----
-
-## 3. 角色（templates）
+## 角色
 
 | 角色 | 模型 | 改檔 | 職責 |
 |---|---|---|---|
@@ -91,76 +47,80 @@ template 跑的是互動模式的 `claude`，回報完不會退出，會一直�
 | `reviewer` | opus | ✗ | 審查 `<base>...HEAD` 與未 commit 的變更，依嚴重程度回報 |
 | `tester` | haiku | 只改測試 | 撰寫、執行測試；揭露的 bug 只回報 |
 
-### 所有角色共同限制
+模型分配是個人偏好：需要推理的用 opus，實作用 sonnet，跑測試用 haiku。要改就編輯 `templates/*.md` 開頭的 `command:`。
 
-- 不啟動其他 agent（只有主 agent 能派工）。
-- 遵守該專案自己的 `CLAUDE.md` / `AGENTS.md`（風格、測試範圍、遷移檔等）。
-- 需求不清楚、範圍要擴大時，停下來回報，不自行假設。
+每個角色的完整限制（commit 規則、回報格式等）都寫在 template 本身，以 [`templates/`](templates/) 為準。共通原則：不啟動其他 agent、遵守專案自己的 `CLAUDE.md` / `AGENTS.md`、需求不清楚就停下回報。
 
-### Commit 規則（developer / fixer / tester）
+## 用法
 
-- 只在 worktree 裡 commit。判斷方式：`git rev-parse --git-dir` ≠ `git rev-parse --git-common-dir` 才是 worktree；相同就不 commit，改在回報中列出變更。
-- 只 `git add` 自己改的檔案（指名路徑），禁用 `git add -A` / `git add .`。
-- 完成一個可獨立運作的段落就 commit，不要累積到最後。
-- 訊息遵循專案慣例。
-- **不 push、不切 branch、不 rebase、不改寫既有 commit。**
-
----
-
-## 4. Layout（`main-procs`）
-
-```
-┌──────────────┬──────────────────────────────────────────┐
-│ brand        │ tabs-procs（tab 列）                      │
-├──────────────┼────────────────────────────┬─────────────┤
-│ spaces       │                            │ 右側面板     │
-│              │   main（目前 tab 的 panes） │ （預設隱藏） │
-├──────────────┤                            │ files       │
-│ agents       │                            │ changes     │
-│ （grouped，   │                            │ processes   │
-│  子 agent 樹）│                            │ tokens      │
-├──────────────┼────────────────────────────┴─────────────┤
-│ footer       │ workspace-status                         │
-└──────────────┴──────────────────────────────────────────┘
-  268px                                         368px
-```
-
-與原版 `main` 的差異：
-
-- tab 列改用 `tabs-procs` mod。
-- 右側面板 stack 新增 `processes`（resource-monitor）與 `tokens`（token-usage）。
-
-其他：側欄目前是收合狀態（`cmd-b` 切換），pane 有 30px 標題列、圓角 10、間距 8。
-
----
-
-## 5. 常用快捷鍵
-
-| 按鍵 | 動作 |
-|---|---|
-| `cmd-n` / `cmd-t` | 新 space / 新 tab |
-| `ctrl-1…9` / `cmd-1…9` | 切換 space / tab |
-| `cmd-alt-[` `]` | 上一個 / 下一個 space |
-| `cmd-[` `]` | 上一個 / 下一個 agent |
-| `cmd-d` / `cmd-shift-d` | 向右 / 向下分割 pane |
-| `cmd-shift-enter` | pane 放大 |
-| `cmd-alt-方向` | 移動焦點到相鄰 pane |
-| `cmd-b` | 切換側欄 |
-| `cmd-p` | picker |
-| `cmd-shift-p` | 指令面板 |
-| `cmd-shift-l` | 切換 layout |
-| `f2` / `shift-f2` | 重新命名 tab / space |
-| `ctrl-,`（terminal 內） | 輸入全形逗號「，」 |
-| `ctrl-v`（terminal 內） | 貼上圖片 |
-
----
-
-## 6. 常用 `hc` 指令
+### 基本：`hc run`（只依賴 herdr-core）
 
 ```sh
-hc ls                          # 列出 terminal／agent（含 parent、template、status）
-hc templates                   # 列出角色
-hc run --name <名稱> --cwd <dir> <角色> "任務"   # 派工並等待
-#   --bg 不等待、--rm 結束後自動移除、--outlive-parent 父 agent 結束後繼續跑
-hc --help                      # 完整說明
+# 1. 會改檔的角色出場前，先開 worktree
+git worktree add <repo>/.worktrees/<feature> -b <branch>
+
+# 2. 派角色，--cwd 指向該 worktree
+hc run --name <名稱> --cwd <repo>/.worktrees/<feature> developer "依 plan 實作 …"
 ```
+
+名稱限 `a-z 0-9 - _`、1–32 字元。用 `hc run` 啟動的角色是 **sub-agent**：沒有自己的 pane，只出現在側邊欄、掛在主 agent 底下。要看內容用 `terminal.peek`，要給它 pane 用 `terminal.keep`。
+
+常用選項：`--bg`（不等待）、`--rm`（結束後自動移除）、`--outlive-parent`（主 agent 結束後繼續跑）。
+
+### 進階：`herdr-team`（新 tab + pane）
+
+```sh
+herdr-team -C <worktree> -t fix-login \
+  bug-finder "登入失敗，查根因" \
+  fixer      "等 bug-finder 的結論再動手" \
+  tester     "補登入流程的單元測試"
+```
+
+排列（最多 4 個角色）：
+
+```
+1 個：A          2 個：A | B
+3 個：A | B/C    4 個：A/C | B/D
+```
+
+- `-C`：工作資料夾（通常是 worktree）；`-t`：tab 名稱。
+- `-p`：保留 parent。**從主 agent 執行時加上**，角色會用 `hc send` 把報告回給它，並加 `--outlive-parent`。
+- 沒加 `-p` 時不設 parent，避免報告文字被打進一般 shell 當成指令執行。
+
+### 怎麼選
+
+- 要讓你直接看到每個角色在做什麼 → `herdr-team`。
+- 由主 agent 自動派工、畫面保持乾淨 → `hc run`。
+
+## 派工規則
+
+完整文字在 [`snippets/CLAUDE.md`](snippets/CLAUDE.md)，重點：
+
+- **不在主 checkout 切 branch**，其他 session 與 tab 共用那個資料夾。
+- 會改檔的角色（developer、fixer、tester）先開 worktree。
+- **同一功能的所有角色共用同一個 worktree**；唯讀角色（reviewer、bug-finder）也在裡面，才看得到未合併的變更。跨 repo 時兩邊用相同的 feature 與 branch 名稱。
+- 同一個 worktree 不要同時跑兩個會改檔的角色，要依序或各給一個。
+
+### Sub-agent 生命週期
+
+template 跑的是互動模式的 `claude`，回報完不會退出，會一直是 `live`（狀態 `done`），要由主 agent 清理：
+
+- **先重用**：同功能的後續工作用 `hc send <t> "任務"` 交給原角色，不要另開。
+- **用完就收**：`hc kill <t>`，再 `hc rm <t>`。
+- **merge 時收尾**：先清掉該功能剩下的 sub-agent，再 `git worktree remove`。
+
+名稱沒有固定格式，用你看得懂的即可（例如 `<feature>-be-dev`）。
+
+## 專案結構
+
+```
+bin/herdr-team          啟動 script（macOS / Linux）
+templates/*.md          5 個角色
+snippets/CLAUDE.md      派工與生命週期規則，貼進 CLAUDE.md
+install.sh              安裝（macOS / Linux）
+```
+
+## 相關
+
+- `hc --help`、`hc templates`：herdr-core 說明
+- `~/.config/herdr-app/AGENTS.md`：herdr app 完整說明（由 app 每次啟動時重寫，勿改）

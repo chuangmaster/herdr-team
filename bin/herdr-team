@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# herdr-team：用 herdr-core template 啟動多個角色，並在新 tab 排成 pane。
+#
+# 用法：
+#   herdr-team [-C 資料夾] [-t tab名稱] [-p] 角色 "任務" [角色 "任務" ...]
+#
+# 範例：
+#   herdr-team -C ~/Repository/my-backend -t fix-login \
+#     bug-finder "登入失敗，查根因" \
+#     fixer      "等 bug-finder 的結論再動手" \
+#     tester     "補登入流程的單元測試"
+#
+# 排列（最多 4 個角色）：
+#   1 個：A
+#   2 個：A | B
+#   3 個：A | B/C        （A 在左，B 右上，C 右下）
+#   4 個：A/C | B/D      （2x2）
+#
+# 角色就是 `hc templates` 列出的名稱（~/.config/herdr-core/templates/*.md）。
+# 預設不設 parent：角色完成時不會把回報打進執行這個 script 的 terminal
+# （若那是一般 shell，回報文字會被當成指令執行）。
+# -p：保留 parent（從主控 agent 執行時用），角色會用 hc send 回報給它；
+#     並加上 --outlive-parent，主控結束時角色不會跟著結束。
+
+set -euo pipefail
+
+usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-1}"; }
+die() { echo "herdr-team: $*" >&2; exit 1; }
+
+folder="$PWD"
+tab_name=""
+with_parent=0
+while getopts ":C:t:ph" opt; do
+  case "$opt" in
+    C) folder="$OPTARG" ;;
+    t) tab_name="$OPTARG" ;;
+    p) with_parent=1 ;;
+    h) usage 0 ;;
+    *) usage ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+(( $# >= 2 && $# % 2 == 0 )) || usage
+(( $# / 2 <= 4 )) || die "最多 4 個角色（目前 $(( $# / 2 )) 個）"
+[[ -d "$folder" ]] || die "資料夾不存在：$folder"
+folder="$(cd "$folder" && pwd)"
+
+command -v hc >/dev/null || die "找不到 hc"
+command -v herdr-app >/dev/null || die "找不到 herdr-app"
+command -v jq >/dev/null || die "找不到 jq"
+
+known="$(hc templates --json | jq -r '.templates[].name')"
+roles=(); tasks=()
+while (( $# )); do
+  grep -qx -- "$1" <<<"$known" || die "沒有這個 template：$1（可用：$(tr '\n' ' ' <<<"$known")）"
+  roles+=("$1"); tasks+=("$2"); shift 2
+done
+
+# herdr-app do：失敗時回傳非零，輸出 JSON
+app() { herdr-app do "$1" "$2"; }
+
+# terminal.keep：app 需要一點時間才認得剛啟動的 terminal，所以重試
+keep() {
+  local term="$1" place="$2" out i
+  for i in $(seq 1 30); do
+    if out="$(app terminal.keep "{\"terminal\":\"$term\",\"place\":\"$place\"}" 2>/dev/null)"; then
+      echo "$out"; return 0
+    fi
+    sleep 0.3
+  done
+  die "無法把 $term 放進 pane：$out"
+}
+
+# pane.focus：新 pane 剛建立時可能還沒就緒，所以重試
+focus() {
+  local pane="$1" i
+  for i in $(seq 1 20); do
+    app pane.focus "{\"pane\":\"$pane\"}" >/dev/null 2>&1 && return 0
+    sleep 0.2
+  done
+  die "無法 focus pane $pane"
+}
+
+# 1. 啟動各角色（背景），等待它們都送出第一則訊息
+suffix="$(date +%H%M%S)"
+if (( with_parent )); then
+  parent_opts=(--outlive-parent); run_env=(env)
+else
+  # 清掉 HC_TERMINAL_ID：否則 hc 仍會在任務裡要求回報給執行 script 的 terminal
+  parent_opts=(--no-parent --no-notify); run_env=(env -u HC_TERMINAL_ID)
+fi
+terms=()
+for i in "${!roles[@]}"; do
+  name="${roles[$i]}-$suffix-$((i + 1))"
+  echo "啟動 ${roles[$i]}（${name}）…" >&2
+  out="$("${run_env[@]}" hc run --bg --json "${parent_opts[@]}" --name "$name" --cwd "$folder" "${roles[$i]}" "${tasks[$i]}")" \
+    || die "啟動 ${roles[$i]} 失敗：$out"
+  terms+=("$(jq -r .address <<<"$out")")
+  if [[ "$(jq -r '.first_message.sent // false' <<<"$out")" != "true" ]]; then
+    echo "警告：${roles[$i]} 的任務可能沒送出，請用 hc read ${name} 確認，不要直接重送" >&2
+  fi
+done
+
+# 2. 排列 pane
+panes=()
+out="$(keep "${terms[0]}" tab)"
+panes+=("$(jq -r .pane <<<"$out")")
+tab_id="$(jq -r .tab <<<"$out")"
+
+case "${#terms[@]}" in
+  2)
+    focus "${panes[0]}"; panes+=("$(keep "${terms[1]}" right | jq -r .pane)") ;;
+  3)
+    focus "${panes[0]}"; panes+=("$(keep "${terms[1]}" right | jq -r .pane)")
+    focus "${panes[1]}"; panes+=("$(keep "${terms[2]}" down  | jq -r .pane)") ;;
+  4)
+    focus "${panes[0]}"; panes+=("$(keep "${terms[1]}" right | jq -r .pane)")
+    focus "${panes[0]}"; panes+=("$(keep "${terms[2]}" down  | jq -r .pane)")
+    focus "${panes[1]}"; panes+=("$(keep "${terms[3]}" down  | jq -r .pane)") ;;
+esac
+
+# 3. 命名 tab、focus 回第一個角色
+[[ -n "$tab_name" ]] && app tab.rename "{\"id\":\"$tab_id\",\"name\":$(jq -Rn --arg n "$tab_name" '$n')}" >/dev/null
+focus "${panes[0]}"
+
+echo "完成：tab ${tab_name:-$tab_id}" >&2
+for i in "${!roles[@]}"; do
+  printf '  %-12s %s  (hc read %s-%s-%d)\n' "${roles[$i]}" "${terms[$i]}" "${roles[$i]}" "$suffix" "$((i + 1))" >&2
+done
